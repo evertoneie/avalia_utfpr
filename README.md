@@ -1,6 +1,8 @@
 # 📊 Sistema Integrado: Avaliação Docente e Mapeamento de Evasão (IA Local)
 
-Este é um sistema desenvolvido para auxiliar Coordenações de Curso e Chefias de Departamento na análise automatizada de relatórios de avaliação docente (formato PDF). 
+Esta é uma versão de teste de sistema desenvolvido para auxiliar Coordenações de Curso e Chefias de Departamento na análise automatizada de relatórios de avaliação docente (formato PDF). O sistema foi desenvolvido pelo professor Everton Luiz de Aguiar, do Departamento Acadêmico de Elétrica da Universidade Tecnológica FEderal do Paraná - Campus Pato Branco. 
+
+Para mais informações e colaborações, por favor entre em contato pelo e-mail eaguiar@utfpr.edu.br
 
 O sistema utiliza Inteligência Artificial (Llama 3) rodando **100% localmente** na sua máquina. Nenhum dado de aluno, nota ou comentário é enviado para a internet. Total privacidade e adequação à LGPD.
 
