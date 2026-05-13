@@ -1,5 +1,5 @@
 #!/bin/bash
-# Força o terminal a entrar na pasta onde este script está localizado, e depois volta pra raiz
+# Navega para a pasta raiz do projeto de forma segura
 cd "$(dirname "$0")/.." || exit
 
 echo "========================================================"
@@ -14,17 +14,25 @@ if ! command -v ollama &> /dev/null; then
     exit 1
 fi
 
-echo "Criando ambiente isolado Python (venv)..."
+echo "1. Criando ambiente isolado Python (venv)..."
 python3 -m venv venv
+
+# Verifica se o venv foi realmente criado
+if [ ! -f "venv/bin/activate" ]; then
+    echo "❌ ERRO: O Mac não conseguiu criar o ambiente virtual."
+    echo "Verifique se o Python3 está instalado corretamente."
+    exit 1
+fi
+
 source venv/bin/activate
 
-echo "Instalando as bibliotecas do sistema..."
-pip install --upgrade pip
-pip install -r requirements.txt
+echo "2. Instalando as bibliotecas do sistema..."
+python3 -m pip install --upgrade pip
+python3 -m pip install -r requirements.txt
 
-echo "Baixando a Inteligência Artificial Llama 3 (4.7 GB)..."
+echo "3. Baixando a Inteligência Artificial Llama 3 (4.7 GB)..."
 ollama pull llama3
 
 echo "========================================================"
-echo "Instalação Concluída!"
+echo "✅ Instalação Concluída!"
 echo "Pode fechar esta janela."
