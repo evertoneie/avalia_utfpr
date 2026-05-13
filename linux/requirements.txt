@@ -1,0 +1,7 @@
+streamlit
+pdfplumber
+pandas
+ollama
+plotly
+fpdf
+kaleido
