@@ -10,9 +10,96 @@ import tempfile
 import os
 
 # ==========================================
-# CONFIGURAÇÃO INICIAL DA PÁGINA
+# CONFIGURAÇÃO INICIAL E ARMAZENAMENTO
 # ==========================================
 st.set_page_config(page_title="Sistema Integrado de Avaliação Docente", layout="wide")
+
+CONFIG_FILE = "config_sistema.json"
+
+def load_config():
+    if os.path.exists(CONFIG_FILE):
+        with open(CONFIG_FILE, "r", encoding="utf-8") as f:
+            return json.load(f)
+    return None
+
+def save_config(data):
+    with open(CONFIG_FILE, "w", encoding="utf-8") as f:
+        json.dump(data, f, ensure_ascii=False, indent=4)
+
+# Carrega a configuração salva
+config = load_config()
+
+# ==========================================
+# TELA DE SETUP (PRIMEIRO ACESSO)
+# ==========================================
+if not config:
+    st.title("👋 Bem-vindo ao Sistema de Avaliação Docente!")
+    st.markdown("Parece que é a sua primeira vez aqui. Vamos configurar o sistema para aumentar a precisão da leitura dos PDFs.")
+    
+    perfil = st.radio("Selecione o seu perfil de uso:", ["Sou Professor", "Sou Chefia de Departamento / Coordenação"])
+    
+    if perfil == "Sou Professor":
+        nome_prof = st.text_input("Qual é o seu nome completo?")
+        st.markdown("*O sistema usará seu nome para procurá-lo diretamente nos relatórios, garantindo 100% de precisão.*")
+        if st.button("Salvar e Iniciar", type="primary"):
+            if nome_prof.strip():
+                save_config({"perfil": "Professor", "lista_professores": [nome_prof.strip()]})
+                st.rerun()
+            else:
+                st.error("Por favor, insira seu nome.")
+                
+    else:
+        st.markdown("Como Chefia, você pode cadastrar o nome dos professores do departamento. O sistema usará essa base para identificar de quem é cada PDF de forma infalível.")
+        
+        col1, col2 = st.columns(2)
+        with col1:
+            nomes_texto = st.text_area("Opção A: Digite/Cole os nomes (um por linha, sem acentos ou caracteres especiais)", height=200, placeholder="Fulano de Tal\nCiclano das Tantas\n...")
+        with col2:
+            arquivo_csv = st.file_uploader("Opção B: Enviar lista em .CSV", type="csv")
+            st.markdown("*Dica: O CSV deve ter os nomes na primeira coluna.*")
+            
+        if st.button("Salvar Base de Professores e Iniciar", type="primary"):
+            lista_final = []
+            if nomes_texto:
+                lista_final.extend([n.strip() for n in nomes_texto.split('\n') if n.strip()])
+            if arquivo_csv:
+                try:
+                    df_csv = pd.read_csv(arquivo_csv, header=None)
+                    lista_final.extend(df_csv.iloc[:, 0].dropna().astype(str).tolist())
+                except Exception as e:
+                    st.error("Erro ao ler CSV.")
+            
+            # Limpa duplicatas
+            lista_final = list(set([n.strip() for n in lista_final if n.strip()]))
+            
+            if len(lista_final) > 0:
+                save_config({"perfil": "Chefia", "lista_professores": lista_final})
+                st.rerun()
+            else:
+                st.warning("Insira pelo menos um nome para continuar, ou feche a aba se quiser testar sem configuração.")
+    st.stop() # Impede que o resto do app carregue até configurar
+
+# ==========================================
+# MENU LATERAL (CONFIGURAÇÕES)
+# ==========================================
+with st.sidebar:
+    st.subheader("⚙️ Configurações Atuais")
+    st.write(f"**Perfil:** {config.get('perfil', 'N/A')}")
+    st.write(f"**Professores Registrados:** {len(config.get('lista_professores', []))}")
+    
+    with st.expander("Ver lista de nomes"):
+        for n in config.get('lista_professores', []):
+            st.write(f"- {n}")
+            
+    st.markdown("---")
+    if st.button("🔄 Resetar / Alterar Nomes"):
+        if os.path.exists(CONFIG_FILE):
+            os.remove(CONFIG_FILE)
+        st.rerun()
+
+# ==========================================
+# APLICAÇÃO PRINCIPAL
+# ==========================================
 st.title("📊 Sistema Integrado: Avaliação Docente e Risco de Evasão")
 
 if 'df_avaliacao' not in st.session_state:
@@ -39,6 +126,9 @@ with tab1:
         comentarios_preparados = []
         resumo_arquivos = []
         
+        # Puxa a lista de professores da configuração e ordena por tamanho do nome
+        lista_busca_professores = sorted(config.get('lista_professores', []), key=len, reverse=True)
+        
         with st.spinner("Lendo PDFs e mapeando a estrutura visual das tabelas..."):
             for uploaded_file in uploaded_files:
                 texto_completo = ""
@@ -47,64 +137,52 @@ with tab1:
                     for page in pdf.pages:
                         texto_completo += page.extract_text() + "\n"
                         
-                    # 1. Captura dos Metadados (O TRITURADOR DE CABEÇALHOS BLINDADO COM CORTADOR)
+                    # 1. CAPTURA DO NOME (MÉTODO WHITELIST + FALLBACK)
+                    professor_encontrado = None
                     try:
-                        # CORTADOR DE SEGURANÇA: Isola o cabeçalho cortando no rodapé do sistema
-                        texto_cabecalho = texto_completo.split('*Os alunos')[0]
-                        linhas_cabecalho = texto_cabecalho.split('\n')
+                        texto_busca_norm = re.sub(r'\s+', ' ', texto_completo[:2000].replace('\n', ' ')).strip().lower()
                         
-                        # Palavras que serão APAGADAS da linha, preservando o resto
-                        lixo_sub = [
-                            r'Professor', r'Pato Branco', r'C[aâ]mpus:', r'Campus', r'UTFPR', 
-                            r'UNIVERSI\w*', r'TECHOLOGICA', r'PARAN[AÁ]'
-                        ]
+                        for prof_registrado in lista_busca_professores:
+                            prof_norm = re.sub(r'\s+', ' ', prof_registrado).strip().lower()
+                            if prof_norm and prof_norm in texto_busca_norm:
+                                professor_encontrado = prof_registrado 
+                                break
                         
-                        # Palavras do sistema que justificam a exclusão da LINHA INTEIRA
-                        lixo_drop = [
-                            r'\d{2}/\d{2}/\d{4}', r'\d{2}:\d{2}', r'Avalia[cç][aã]o do Docente', 
-                            r'Minist[eé]rio da Educa[cç][aã]o', r'Universidade\s+Tec', 
-                            r'UNIVERSIDADE\s+TEC', r'M[eé]dia de todas', r'm[eé]dia final', 
-                            r'Semestre/ano', r'Universo \(', r'Avalia[cç][õo]es realizadas', 
-                            r'Avalia[cç][õo]es n[aã]o', r'pontos', r'realizadas\)',
-                            r'diferen[cç]a entre universo', r'todos os cursos', r'disciplinas e campi'
-                        ]
-                        
-                        nome_parts = []
-                        for linha in linhas_cabecalho:
-                            linha = linha.strip()
-                            if not linha: continue
+                        if not professor_encontrado:
+                            texto_cabecalho = texto_completo.split('*Os alunos')[0]
+                            linhas_cabecalho = texto_cabecalho.split('\n')
                             
-                            drop = False
-                            for ld in lixo_drop:
-                                if re.search(ld, linha, re.IGNORECASE):
-                                    drop = True
-                                    break
-                            if drop: continue
+                            lixo_sub = [r'Professor', r'Pato Branco', r'C[aâ]mpus:', r'Campus', r'UTFPR', r'UNIVERSI\w*', r'TECHOLOGICA', r'PARAN[AÁ]']
+                            lixo_drop = [
+                                r'\d{2}/\d{2}/\d{4}', r'\d{2}:\d{2}', r'Avalia[cç][aã]o do Docente', r'Minist[eé]rio da Educa[cç][aã]o', 
+                                r'Universidade\s+Tec', r'UNIVERSIDADE\s+TEC', r'M[eé]dia de todas', r'm[eé]dia final', r'Semestre/ano', 
+                                r'Universo \(', r'Avalia[cç][õo]es realizadas', r'Avalia[cç][õo]es n[aã]o', r'pontos', r'realizadas\)',
+                                r'diferen[cç]a entre universo', r'todos os cursos', r'disciplinas e campi'
+                            ]
                             
-                            # Pula linhas que são só números (ex: nota 25) ou ano (ex: 2/2025)
-                            if re.match(r'^\d+(?:[.,]\d+)?$', linha) or re.match(r'^\d{1,2}/\d{4}$', linha):
-                                continue
-                                
-                            # Aplica a borracha nas palavras lixo
-                            for ls in lixo_sub:
-                                linha = re.sub(ls, '', linha, flags=re.IGNORECASE).strip()
-                                
-                            # Limpa sujeiras de quebra de PDF e pontuações isoladas
-                            linha = re.sub(r'FEDERAL,\s*DO', '', linha, flags=re.IGNORECASE).strip()
-                            linha = re.sub(r'^[,.-]+$', '', linha).strip()
-                                
-                            if len(linha) > 2:
-                                nome_parts.append(linha)
-                                
-                        professor = " ".join(nome_parts)
-                        professor = re.sub(r'\s+', ' ', professor).strip()
-                        if not professor:
-                            professor = "Desconhecido"
+                            nome_parts = []
+                            for linha in linhas_cabecalho:
+                                linha = linha.strip()
+                                if not linha: continue
+                                drop = False
+                                for ld in lixo_drop:
+                                    if re.search(ld, linha, re.IGNORECASE):
+                                        drop = True
+                                        break
+                                if drop: continue
+                                if re.match(r'^\d+(?:[.,]\d+)?$', linha) or re.match(r'^\d{1,2}/\d{4}$', linha): continue
+                                for ls in lixo_sub:
+                                    linha = re.sub(ls, '', linha, flags=re.IGNORECASE).strip()
+                                linha = re.sub(r'FEDERAL,\s*DO', '', linha, flags=re.IGNORECASE).strip()
+                                linha = re.sub(r'^[,.-]+$', '', linha).strip()
+                                if len(linha) > 2: nome_parts.append(linha)
+                                    
+                            professor_encontrado = " ".join(nome_parts)
+                            professor_encontrado = re.sub(r'\s+', ' ', professor_encontrado).strip()
+                            if not professor_encontrado: professor_encontrado = "Desconhecido"
                             
-                        # Métricas numéricas
                         padrao_metadados = r'(\d+(?:[.,]\d+)?)\D+?(?<!\d/)(?<!\d)(0?[12]\s*/\s*20\d{2})(?!\d)\D+?(\d+)\D+?(\d+)\D+?(\d+)'
                         match_valores = re.search(padrao_metadados, texto_completo)
-                        
                         if match_valores:
                             media, semestre_ano, universo, realizadas, nao_realizadas = match_valores.groups()
                             semestre_ano = semestre_ano.replace(' ', '')
@@ -112,7 +190,7 @@ with tab1:
                         else:
                             media, semestre, ano, universo, realizadas, nao_realizadas = 0, "0", "0000", 0, 0, 0
                     except Exception as e:
-                        professor, media, semestre, ano, universo, realizadas, nao_realizadas = "Erro", 0, "0", "0000", 0, 0, 0
+                        professor_encontrado, media, semestre, ano, universo, realizadas, nao_realizadas = "Erro", 0, "0", "0000", 0, 0, 0
 
                     # 2. Extração Física dos Comentários
                     comentarios_arquivo = []
@@ -157,21 +235,21 @@ with tab1:
 
                 resumo_arquivos.append({
                     "Arquivo": uploaded_file.name,
-                    "Professor": professor,
+                    "Professor": professor_encontrado,
                     "Semestre": f"{semestre}/{ano}",
                     "Qtd. Comentários Extraídos": len(comentarios_arquivo)
                 })
 
                 for c in comentarios_arquivo:
                     comentarios_preparados.append({
-                        'professor': professor, 'ano': ano, 'semestre': semestre,
+                        'professor': professor_encontrado, 'ano': ano, 'semestre': semestre,
                         'media': media, 'universo': universo, 'realizadas': realizadas,
                         'nao_realizadas': nao_realizadas, 'comentario_original': c
                     })
 
         st.success(f"✅ Leitura concluída: **{len(uploaded_files)} arquivo(s)** contendo **{len(comentarios_preparados)} comentários reais**.")
         with st.expander("Clique para verificar a extração de cada PDF"):
-            st.dataframe(pd.DataFrame(resumo_arquivos), use_container_width=True)
+            st.dataframe(pd.DataFrame(resumo_arquivos), width="stretch")
 
         # 3. Análise IA em Lote
         if len(comentarios_preparados) > 0:
@@ -265,12 +343,12 @@ with tab2:
             with gcol1:
                 fig_cat = px.bar(df_filtrado['categoria_identificada'].value_counts().reset_index(), y='categoria_identificada', x='count', orientation='h', title="Volume por Categoria", color='count', color_continuous_scale='Blues')
                 fig_cat.update_layout(yaxis={'categoryorder':'total ascending'}, xaxis_title="Quantidade", yaxis_title="")
-                st.plotly_chart(fig_cat, use_container_width=True)
+                st.plotly_chart(fig_cat, width="stretch")
             with gcol2:
                 fig_pie = px.pie(df_filtrado, names='sentimento', title="Sentimento Geral", color='sentimento', color_discrete_map={'Positivo': '#2ecc71', 'Neutro': '#95a5a6', 'Negativo': '#e74c3c'}, hole=0.4)
-                st.plotly_chart(fig_pie, use_container_width=True)
+                st.plotly_chart(fig_pie, width="stretch")
 
-            st.dataframe(df_filtrado[['professor', 'periodo', 'categoria_identificada', 'sentimento', 'resumo_ia', 'comentario_original']], use_container_width=True)
+            st.dataframe(df_filtrado[['professor', 'periodo', 'categoria_identificada', 'sentimento', 'resumo_ia', 'comentario_original']], width="stretch")
         else:
             st.warning("Nenhum dado para os filtros selecionados.")
     else:
@@ -298,21 +376,21 @@ with tab3:
                 e_col1, e_col2 = st.columns([1, 1])
                 with e_col1:
                     fig_evasao = px.bar(df_evasao_filtrado['fator_evasao'].value_counts().reset_index(), x='fator_evasao', y='count', title="Fatores de Risco", color='count', color_continuous_scale='Reds')
-                    st.plotly_chart(fig_evasao, use_container_width=True)
+                    st.plotly_chart(fig_evasao, width="stretch")
                 with e_col2:
                     fig_pie_evasao = px.pie(df_evasao_filtrado, names='fator_evasao', title="Concentração", hole=0.3, color_discrete_sequence=px.colors.sequential.OrRd[::-1])
-                    st.plotly_chart(fig_pie_evasao, use_container_width=True)
+                    st.plotly_chart(fig_pie_evasao, width="stretch")
                 
-                st.dataframe(df_evasao_filtrado[['professor', 'periodo', 'fator_evasao', 'resumo_ia', 'comentario_original']], use_container_width=True)
+                st.dataframe(df_evasao_filtrado[['professor', 'periodo', 'fator_evasao', 'resumo_ia', 'comentario_original']], width="stretch")
     else:
         st.info("Processe os PDFs na Aba 1.")
 
 # ==========================================
-# ABA 4: COMPARATIVO CHEFIA
+# ABA 4: COMPARATIVO CHEFIA (NOVO MODELO LINEAR)
 # ==========================================
 with tab4:
     st.markdown("### 👥 Painel Estratégico da Chefia de Departamento")
-    st.markdown("Visão macro para identificar os pontos fortes e os gargalos do corpo docente.")
+    st.markdown("Visão macro linear para ranqueamento e identificação rápida de gargalos no corpo docente.")
 
     if st.session_state['df_avaliacao'] is not None:
         df_comp = st.session_state['df_avaliacao'].copy()
@@ -321,58 +399,92 @@ with tab4:
         if len(professores_unicos) <= 1:
             st.warning("⚠️ O painel comparativo exige PDFs de 2 ou mais professores diferentes.")
         else:
-            c_kpi1, c_kpi2 = st.columns(2)
-            c_kpi1.metric("Docentes em Comparação", len(professores_unicos))
-            c_kpi2.metric("Apontamentos Processados", len(df_comp))
+            # KPIs Iniciais
+            c_kpi1, c_kpi2, c_kpi3 = st.columns(3)
+            c_kpi1.metric("Docentes Analisados", len(professores_unicos))
+            c_kpi2.metric("Total de Apontamentos", len(df_comp))
+            
+            total_alertas_evasao = len(st.session_state['df_evasao']) if st.session_state['df_evasao'] is not None else 0
+            c_kpi3.metric("Alertas Críticos de Evasão", total_alertas_evasao)
+            
             st.markdown("---")
             
-            # --- 1. GRÁFICO DE RADAR ---
-            st.subheader("🕸️ Perfil Docente: Mapa de Competências (Radar)")
-            st.markdown("Mostra o **Volume de Elogios e Avaliações Positivas** em cada categoria, permitindo visualizar onde cada professor se destaca.")
+            # ---------------------------------------------------------
+            # SEÇÃO 1: ALERTAS AUTOMATIZADOS
+            # ---------------------------------------------------------
+            st.subheader("💡 Destaques Departamentais (Automático)")
             
-            prof_radar_sel = st.multiselect("Selecione os professores para sobrepor no Radar:", options=professores_unicos, default=professores_unicos[:3])
+            df_sent = df_comp.groupby(['professor', 'sentimento']).size().unstack(fill_value=0).reset_index()
+            for col in ['Positivo', 'Negativo', 'Neutro']:
+                if col not in df_sent.columns: df_sent[col] = 0
+            df_sent['Total'] = df_sent['Positivo'] + df_sent['Negativo'] + df_sent['Neutro']
+            df_sent['% Negativo'] = (df_sent['Negativo'] / df_sent['Total']) * 100
+            df_sent['% Positivo'] = (df_sent['Positivo'] / df_sent['Total']) * 100
             
-            if prof_radar_sel:
-                df_pos = df_comp[(df_comp['sentimento'] == 'Positivo') | (df_comp['categoria_identificada'] == 'Elogio')]
-                categorias = ['Didatica', 'Avaliacao/Provas', 'Dominio de Conteudo', 'Organizacao', 'Postura/Relacionamento']
-                base_grid = pd.DataFrame(list(itertools.product(prof_radar_sel, categorias)), columns=['professor', 'categoria_identificada'])
+            prof_mais_criticado = df_sent.loc[df_sent['% Negativo'].idxmax()] if not df_sent.empty else None
+            prof_mais_elogiado = df_sent.loc[df_sent['% Positivo'].idxmax()] if not df_sent.empty else None
+            
+            df_negativos = df_comp[df_comp['sentimento'] == 'Negativo']
+            gargalo_didatica = "N/A"
+            gargalo_provas = "N/A"
+            if not df_negativos.empty:
+                didatica_counts = df_negativos[df_negativos['categoria_identificada'] == 'Didatica']['professor'].value_counts()
+                if not didatica_counts.empty: gargalo_didatica = didatica_counts.idxmax()
                 
-                df_radar_counts = df_pos.groupby(['professor', 'categoria_identificada']).size().reset_index(name='Volume Positivo')
-                df_radar_final = pd.merge(base_grid, df_radar_counts, on=['professor', 'categoria_identificada'], how='left').fillna(0)
+                provas_counts = df_negativos[df_negativos['categoria_identificada'] == 'Avaliacao/Provas']['professor'].value_counts()
+                if not provas_counts.empty: gargalo_provas = provas_counts.idxmax()
 
-                # Paleta BOLD de Extremo Contraste
-                cores_berrantes = ['#E6194B', '#3CB371', '#4363D8', '#F58231', '#911EB4', '#46F0F0', '#F032E6']
-                
-                fig_radar = px.line_polar(
-                    df_radar_final, 
-                    r='Volume Positivo', 
-                    theta='categoria_identificada', 
-                    color='professor', 
-                    line_close=True, 
-                    markers=True,
-                    color_discrete_sequence=cores_berrantes 
-                )
-                fig_radar.update_traces(fill='toself', opacity=0.3)
-                fig_radar.update_layout(polar=dict(radialaxis=dict(visible=True, showticklabels=True)), height=500)
-                st.plotly_chart(fig_radar, use_container_width=True)
-            else:
-                st.info("Selecione ao menos um professor para exibir o radar.")
+            col_a1, col_a2, col_a3 = st.columns(3)
+            if prof_mais_elogiado is not None:
+                col_a1.info(f"🏆 **Maior Aprovação:**\n\n**{prof_mais_elogiado['professor']}** ({prof_mais_elogiado['% Positivo']:.1f}%)")
+                col_a2.error(f"⚠️ **Maior Rejeição:**\n\n**{prof_mais_criticado['professor']}** ({prof_mais_criticado['% Negativo']:.1f}%)")
+            col_a3.warning(f"🚨 **Pior em Didática:** {gargalo_didatica}\n\n🚨 **Pior em Provas:** {gargalo_provas}")
 
             st.markdown("---")
             
-            # --- 2. MAPA DE CALOR ---
-            st.subheader("🔥 Mapa de Calor: Concentração de Críticas (Gargalos)")
-            st.markdown("Cruza os professores com as categorias que mais receberam **Avaliações Negativas**.")
+            # ---------------------------------------------------------
+            # SEÇÃO 2: RANKING DE SENTIMENTO (BARRAS 100%)
+            # ---------------------------------------------------------
+            st.subheader("📊 Ranking Geral de Aprovação vs. Rejeição")
+            st.markdown("Gráfico normalizado (100%). Ordenado do professor com **maior taxa de rejeição** (topo) para o mais bem avaliado (base).")
             
-            df_neg = df_comp[df_comp['sentimento'] == 'Negativo']
-            if not df_neg.empty:
-                heatmap_data = df_neg.groupby(['professor', 'categoria_identificada']).size().unstack(fill_value=0)
-                
-                fig_heat = px.imshow(heatmap_data, text_auto=True, color_continuous_scale='Reds', aspect="auto")
-                fig_heat.update_layout(xaxis_title="Categoria da Crítica", yaxis_title="Professor", height=400)
-                st.plotly_chart(fig_heat, use_container_width=True)
+            df_sent_melt = df_sent.melt(id_vars=['professor', 'Total', '% Negativo'], value_vars=['Negativo', 'Neutro', 'Positivo'], var_name='Sentimento', value_name='Quantidade')
+            df_sent_melt = df_sent_melt.sort_values(by='% Negativo', ascending=False)
+            
+            fig_ranking = px.bar(
+                df_sent_melt, 
+                y='professor', 
+                x='Quantidade', 
+                color='Sentimento', 
+                orientation='h',
+                color_discrete_map={'Positivo': '#2ecc71', 'Neutro': '#95a5a6', 'Negativo': '#e74c3c'}
+            )
+            # CORREÇÃO: Aplica a normalização e o empilhamento dentro do update_layout
+            fig_ranking.update_layout(
+                barmode='stack',
+                barnorm='percent',
+                xaxis_title="Proporção (%)", 
+                yaxis_title="", 
+                height=max(300, len(professores_unicos) * 45)
+            )
+            fig_ranking.update_layout(legend=dict(orientation="h", yanchor="bottom", y=1.02, xanchor="right", x=1))
+            st.plotly_chart(fig_ranking, width="stretch")
+
+            st.markdown("---")
+            
+            # ---------------------------------------------------------
+            # SEÇÃO 3: MAPA DE CALOR (DIAGNÓSTICO EXATO)
+            # ---------------------------------------------------------
+            st.subheader("🔥 Mapa de Gargalos: Onde o professor está errando?")
+            st.markdown("Este mapa foca **exclusivamente nas críticas (Sentimento Negativo)**. Ele mostra exatamente qual categoria gerou a insatisfação de cada professor.")
+            
+            if not df_negativos.empty:
+                heatmap_data = df_negativos.groupby(['professor', 'categoria_identificada']).size().unstack(fill_value=0)
+                fig_heat = px.imshow(heatmap_data, text_auto=True, color_continuous_scale='YlOrRd', aspect="auto")
+                fig_heat.update_layout(xaxis_title="Motivo da Crítica", yaxis_title="", height=max(300, len(heatmap_data) * 45))
+                st.plotly_chart(fig_heat, width="stretch")
             else:
-                st.success("🎉 Nenhum comentário classificado como Negativo neste lote de avaliações!")
+                st.success("🎉 Excelente! Não houve nenhuma crítica (Sentimento Negativo) registrada neste lote.")
                 fig_heat = None
 
             # --- BOTÃO DE GERAÇÃO DE PDF ---
@@ -382,25 +494,25 @@ with tab4:
             if st.button("Gerar Relatório Fotográfico (PDF)", type="secondary"):
                 try:
                     from fpdf import FPDF
-                    with st.spinner("Fotografando gráficos de Radar e Mapa de Calor..."):
+                    with st.spinner("Diagramando o relatório..."):
                         pdf = FPDF(orientation="L", unit="mm", format="A4")
                         pdf.set_auto_page_break(auto=True, margin=15)
                         
                         pdf.add_page()
                         pdf.set_font("Arial", 'B', 18)
-                        pdf.cell(0, 15, "Relatorio Comparativo - Inteligencia Educacional", ln=True, align='C')
+                        pdf.cell(0, 15, "Relatorio Estrategico da Chefia de Departamento", ln=True, align='C')
                         pdf.set_font("Arial", '', 12)
-                        pdf.cell(0, 8, f"Docentes avaliados no relatorio: {len(prof_radar_sel)}", ln=True, align='C')
+                        pdf.cell(0, 8, f"Docentes analisados: {len(professores_unicos)}", ln=True, align='C')
                         pdf.ln(5)
 
-                        with tempfile.NamedTemporaryFile(delete=False, suffix=".png") as tmp_radar:
-                            fig_radar.write_image(tmp_radar.name, width=1200, height=600)
-                            pdf.image(tmp_radar.name, x=20, y=None, w=250)
+                        with tempfile.NamedTemporaryFile(delete=False, suffix=".png") as tmp_rank:
+                            fig_ranking.write_image(tmp_rank.name, width=1200, height=600)
+                            pdf.image(tmp_rank.name, x=20, y=None, w=250)
 
                         if fig_heat is not None:
                             pdf.add_page()
                             pdf.set_font("Arial", 'B', 16)
-                            pdf.cell(0, 15, "Mapa de Gargalos Departamentais", ln=True, align='C')
+                            pdf.cell(0, 15, "Diagnostico de Gargalos (Criticas por Categoria)", ln=True, align='C')
                             with tempfile.NamedTemporaryFile(delete=False, suffix=".png") as tmp_heat:
                                 fig_heat.write_image(tmp_heat.name, width=1200, height=500)
                                 pdf.image(tmp_heat.name, x=20, y=None, w=250)
@@ -411,14 +523,14 @@ with tab4:
                         with open(tmp_pdf.name, "rb") as f:
                             pdf_bytes = f.read()
 
-                        os.unlink(tmp_radar.name)
+                        os.unlink(tmp_rank.name)
                         if fig_heat is not None: os.unlink(tmp_heat.name)
 
                         st.success("✅ Relatório Executivo gerado com sucesso!")
                         st.download_button(
-                            label="⬇️ Baixar PDF do Conselho",
+                            label="⬇️ Baixar PDF da Chefia",
                             data=pdf_bytes,
-                            file_name="relatorio_radar_chefia.pdf",
+                            file_name="relatorio_chefia_ranking.pdf",
                             mime="application/pdf"
                         )
                 except ImportError:
