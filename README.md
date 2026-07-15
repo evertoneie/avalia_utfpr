@@ -7,7 +7,7 @@ Para mais informações e colaborações, por favor entre em contato pelo e-mail
 O sistema utiliza Inteligência Artificial (Llama 3) rodando **100% localmente** na sua máquina. Nenhum dado de aluno, nota ou comentário é enviado para a internet. Total privacidade e adequação à LGPD.
 
 ## ✨ Funcionalidades
-- **Extração Cirúrgica:** Ignora falhas de formatação do PDF e extrai apenas comentários reais.
+- **Extração Aprimorada:** Ignora falhas de formatação do PDF e extrai apenas comentários reais.
 - **Processamento em Lote:** Envie 1 ou 50 relatórios de uma vez.
 - **Análise de Sentimento:** Classifica comentários em Positivo, Neutro ou Negativo e gera relatórios de Didática e Postura.
 - **Alerta de Evasão:** Mapeia passivamente relatos sobre saúde mental, fadiga extrema e dificuldades estruturais.
